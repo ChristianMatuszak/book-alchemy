@@ -7,6 +7,12 @@
     <title>Add a Book</title>
 </head>
 <body>
+    <nav>
+        <a href="{{ url_for('home') }}">Home</a> |
+        <a href="{{ url_for('add_book') }}">Add Book</a> |
+        <a href="{{ url_for('add_author') }}">Add Author</a>
+    </nav>
+    <hr>
     <h1>Add a New Book</h1>
 
     <form action="/add_book" method="POST">

@@ -1,6 +1,8 @@
 import os
-
+import re
+import logging
 import requests
+
 from flask import Flask, request, redirect, url_for, render_template, flash
 from datetime import datetime
 from data_models import db, Author, Book
@@ -12,6 +14,9 @@ app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
 
 db.init_app(app)
 app.secret_key = 'example_key'
+
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 
 @app.route('/add_author', methods=['GET', 'POST'])
@@ -35,22 +40,32 @@ def add_author():
         birth_date = request.form['birthdate']
         date_of_death = request.form.get('date_of_death')
 
-        existing_author = Author.query.filter_by(name=name).first()
-
-        if existing_author:
-            flash(f"Author {name} already exists in the database.", 'error')
-            return redirect(url_for('add_author'))
+        today = datetime.today().date()
 
         if birth_date:
             birth_date = datetime.strptime(birth_date, '%m/%d/%Y').date()
 
+            if birth_date > today:
+                flash("Birth date cannot be in the future.", 'error')
+                return redirect(url_for('add_author'))
+
         if date_of_death:
             date_of_death = datetime.strptime(date_of_death, '%m/%d/%Y').date()
-        else:
-            date_of_death = None
+
+            if date_of_death > today:
+                flash("Death date cannot be in the future.", 'error')
+                return redirect(url_for('add_author'))
+
+            if birth_date and date_of_death < birth_date:
+                flash("Death date cannot be before birth date.", 'error')
+                return redirect(url_for('add_author'))
+
+        existing_author = Author.query.filter_by(name=name).first()
+        if existing_author:
+            flash(f"Author {name} already exists in the database.", 'error')
+            return redirect(url_for('add_author'))
 
         new_author = Author(name=name, birth_date=birth_date, date_of_death=date_of_death)
-
         db.session.add(new_author)
         db.session.commit()
 
@@ -60,26 +75,32 @@ def add_author():
     return render_template('add_author.html')
 
 
-
 @app.route('/add_book', methods=['GET', 'POST'])
 def add_book():
     """
     Handles the addition of a new book to the database.
 
-    GET: Renders a form to input new book details with a list of authors.
-    POST: Processes the submitted form to create and save a new book entry.
-        - Collects ISBN, title, publication year, and author ID.
-        - Adds the new book to the database.
+    GET:
+        - Retrieves the form for adding a new book, displaying a list of available authors.
+    POST:
+        - Processes the submitted data (title, ISBN, publication year, and selected author).
+        - Adds the new book to the database and commits the changes.
 
-    Flash messages indicate whether the book was added successfully.
+    Flash messages will notify the user whether the book was successfully added or if there were errors.
 
     Returns:
-        Rendered HTML template for book input or redirect on success.
+        - The rendered HTML form for adding a book or a redirect to the same page on success.
     """
     authors = Author.query.all()
 
     if request.method == 'POST':
         isbn = request.form['isbn']
+
+        if not is_valid_isbn(isbn):
+            flash("Invalid ISBN format. Please enter a valid ISBN (ISBN-13 starting with 978).",
+                  'error')
+            return redirect(url_for('add_book'))
+
         title = request.form['title']
         publication_year = request.form['publication_year']
         author_id = request.form['author_id']
@@ -168,7 +189,7 @@ def get_cover_url(isbn):
             cover_id = book_data.get("cover", {}).get("large")
             if cover_id:
                 cover_url = f"{cover_id}"
-                print(f"Cover URL für ISBN {isbn}: {cover_url}")
+                logger.debug(f"Cover URL for ISBN {isbn}: {cover_url}")
 
                 if book:
                     book.cover_url = cover_url
@@ -183,6 +204,8 @@ def get_cover_url(isbn):
     if book:
         book.cover_url = default_cover_url
         db.session.commit()
+
+    logger.warning(f"No cover found for ISBN {isbn}, using default cover.")
     return default_cover_url
 
 @app.route('/book/<int:book_id>/delete', methods=['POST'])
@@ -214,6 +237,49 @@ def delete_book(book_id):
         flash(f'Book "{book.title}" was deleted.', 'success')
 
     return redirect(url_for('home'))
+
+
+def is_valid_isbn(isbn):
+    """
+    Validates the ISBN-13 format (starts with 978 and has 13 digits).
+
+    Args:
+        isbn (str): The ISBN number to validate.
+
+    Returns:
+        bool: True if the ISBN is valid, False otherwise.
+    """
+    isbn = isbn.replace("-", "").replace(" ", "")
+
+    if len(isbn) == 13 and isbn.startswith("978"):
+        return bool(re.match(r'^\d{13}$', isbn)) and check_isbn13(isbn)
+
+    return False
+
+
+def check_isbn13(isbn):
+    """
+    Validates an ISBN-13 using the checksum calculation.
+
+    Args:
+        isbn (str): The ISBN-13 number to validate.
+
+    Returns:
+        bool: True if valid, False otherwise.
+    """
+    total = 0
+    for i in range(12):
+        digit = int(isbn[i])
+        if i % 2 == 0:
+            total += digit
+        else:
+            total += digit * 3
+
+    checksum = 10 - (total % 10)
+    if checksum == 10:
+        checksum = 0
+
+    return int(isbn[12]) == checksum
 
 
 # with app.app_context():
